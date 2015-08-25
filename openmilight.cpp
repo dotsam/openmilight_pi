@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string.h>
 #include <stdio.h>
+#include <getopt.h>
 
 #include <sys/time.h>
 #include <sys/select.h>
@@ -20,7 +21,7 @@ using namespace std;
 #include "PL1167_nRF24.h"
 #include "MiLightRadio.h"
 
-RF24 radio(RPI_V2_GPIO_P1_22, RPI_V2_GPIO_P1_24, BCM2835_SPI_SPEED_1MHZ);
+RF24 radio(RPI_BPLUS_GPIO_J8_15,RPI_BPLUS_GPIO_J8_24, BCM2835_SPI_SPEED_1MHZ);
 
 PL1167_nRF24 prf(radio);
 MiLightRadio mlr(prf);
@@ -109,31 +110,6 @@ void send(uint8_t color, uint8_t bright, uint8_t key,
   send(data);
 }
 
-double getTime()
-{
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  return tv.tv_sec + ((double)tv.tv_usec) * 1e-6;
-}
-
-void fade(uint8_t prefix, uint8_t rem_p, uint8_t remote, uint8_t color, uint8_t bright, uint8_t resends)
-{
-  while(1){
-    color++;
-    send(color, 0x00, 0x0F, 0x44, 0x00);
-    usleep(20000);
-  }
-}
-
-void strobe(uint8_t prefix, uint8_t rem_p, uint8_t remote, uint8_t bright, uint8_t resends)
-{
-  while(1){
-    uint8_t color = rand() % 255;
-    send(color, bright, 0x0F, remote, resends);
-    usleep(50000);
-  }
-}
-
 void udp_raw()
 {
   int sockfd;
@@ -170,7 +146,7 @@ void udp_raw()
   }
 }
 
-void udp_milight(uint16_t remote)
+void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertise)
 {
   fd_set socks;
   int discover_fd, data_fd;
@@ -181,20 +157,25 @@ void udp_milight(uint16_t remote)
 
   uint8_t data[8];
   data[0] = 0xB8;
-  data[1] = (remote >> 8) & 0xFF;
-  data[2] = remote & 0xFF;
+  data[1] = rem_p;
+  data[2] = remote;
   data[3] = 0x00;
   data[4] = 0x00;
   data[5] = 0x00;
   data[6] = 0x01;
-  data[7] = 0x09;
+  data[7] = retries;
 
-  discover_fd = socket(AF_INET, SOCK_DGRAM, 0);
-  bzero(&discover_addr, sizeof(discover_addr));
-  discover_addr.sin_family = AF_INET;
-  discover_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  discover_addr.sin_port = htons(48899);
-  bind(discover_fd, (struct sockaddr *)&discover_addr, sizeof(discover_addr));
+  if(do_advertise){
+    if(debug){
+      printf("Answering bridge discovery requests\n");
+    }
+    discover_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    bzero(&discover_addr, sizeof(discover_addr));
+    discover_addr.sin_family = AF_INET;
+    discover_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    discover_addr.sin_port = htons(48899);
+    bind(discover_fd, (struct sockaddr *)&discover_addr, sizeof(discover_addr));
+  }
 
   data_fd = socket(AF_INET, SOCK_DGRAM, 0);
   bzero(&data_addr, sizeof(data_addr));
@@ -209,7 +190,7 @@ void udp_milight(uint16_t remote)
     socklen_t len = sizeof(cliaddr);
 
     FD_ZERO(&socks);
-    FD_SET(discover_fd, &socks);
+    if(do_advertise){ FD_SET(discover_fd, &socks); }
     FD_SET(data_fd, &socks);
 
     if(select(FD_SETSIZE, &socks, NULL, NULL, NULL) >= 0){
@@ -435,11 +416,10 @@ void usage(const char *arg, const char *options){
   printf("\n");
   printf("   -h                       Show this help\n");
   printf("   -d                       Show debug output\n");
-  printf("   -f                       Fade mode\n");
-  printf("   -s                       Strobe mode\n");
   printf("   -l                       Listening (receiving) mode\n");
   printf("   -u                       UDP mode (raw)\n");
   printf("   -m                       UDP mode (milight)\n");
+  printf("   -a                       Enable milight bridge advertising\n");
   printf("   -n NN<dec>               Resends of the same message\n");
   printf("   -p PP<hex>               Prefix value (Disco Mode)\n");
   printf("   -q RR<hex>               First byte of the remote\n");
@@ -462,9 +442,8 @@ int main(int argc, char** argv)
   int do_receive = 0;
   int do_udp     = 0;
   int do_milight = 0;
-  int do_strobe  = 0;
-  int do_fade    = 0;
   int do_command = 0;
+  int do_advertise = 0;
 
   uint8_t prefix   = 0xB8;
   uint8_t rem_p    = 0x00;
@@ -481,7 +460,7 @@ int main(int argc, char** argv)
 
   uint64_t tmp;
 
-  const char *options = "hdfslumn:p:q:r:c:b:k:v:w:";
+  const char *options = "hdfsluman:p:q:r:c:b:k:v:w:";
 
   while((c = getopt(argc, argv, options)) != -1){
     switch(c){
@@ -492,12 +471,6 @@ int main(int argc, char** argv)
       case 'd':
         debug = 1;
         break;
-      case 'f':
-        do_fade = 1;
-       break;
-      case 's':
-        do_strobe = 1;
-       break;
       case 'l':
         do_receive = 1;
        break;
@@ -506,6 +479,9 @@ int main(int argc, char** argv)
        break;
       case 'm':
         do_milight = 1;
+       break;
+      case 'a':
+        do_advertise = 1;
        break;
       case 'n':
         tmp = strtoll(optarg, NULL, 10);
@@ -583,30 +559,8 @@ int main(int argc, char** argv)
 
   if(do_milight){
     printf("UDP mode (milight), press Ctrl-C to end\n"); 
-    udp_milight(0x0044);
+    udp_milight(rem_p, remote, resends, do_advertise);
   }
-
-  if(do_fade){
-    printf("Fade mode, press Ctrl-C to end\n");
-    fade(prefix, rem_p, remote, color, bright, resends);
-  }
-
-  if(do_strobe){
-    printf("Strobe mode, press Ctrl-C to end\n");
-    strobe(prefix, rem_p, remote, bright, resends);
-  } 
-
-  /*
-  double from = getTime();
-
-  for(int i = 0; i < 200; i++){
-    send(color, 0x00, 0x0F);
-    color += 64;
-  }
-
-  double time = getTime() - from;
-  printf("Time: %f %f %f\n", time, time / 200, 1 / (time/200));
-  */
 
   if(do_command){
     send(command);

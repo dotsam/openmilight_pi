@@ -9,8 +9,6 @@
 
 static uint16_t calc_crc(uint8_t *data, size_t data_length);
 static uint8_t reverse_bits(uint8_t data);
-static void demangle_packet(uint8_t *in, uint8_t *out) ;
-
 
 /**
  * Constructor
@@ -48,7 +46,7 @@ int PL1167_nRF24::recalc_parameters()
     address_overflow = nrf_address_length - 5;
     nrf_address_length = 5;
   }
-  int packet_length = address_overflow + ( (_trailerLength + 7) / 8) + _maxPacketLength;
+  size_t packet_length = address_overflow + ( (_trailerLength + 7) / 8) + _maxPacketLength;
   if (_crc) {
     packet_length += 2;
   }
