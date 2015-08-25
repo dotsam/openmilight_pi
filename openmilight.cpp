@@ -460,7 +460,7 @@ int main(int argc, char** argv)
 
   uint64_t tmp;
 
-  const char *options = "hdfsluman:p:q:r:c:b:k:v:w:";
+  const char *options = "hdluman:p:q:r:c:b:k:v:w:";
 
   while((c = getopt(argc, argv, options)) != -1){
     switch(c){
