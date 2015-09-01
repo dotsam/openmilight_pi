@@ -135,8 +135,7 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
     discover_addr.sin_port = htons(48899);
     bind(discover_fd, (struct sockaddr *)&discover_addr, sizeof(discover_addr));
 
-    setsockopt(discover_fd, IPPROTO_IP, IP_PKTINFO);
-    char discover_cmbuf[0x100];
+    setsockopt(discover_fd, IPPROTO_IP, IP_PKTINFO, &opt, sizeof(opt));
     
     char str_ip[INET_ADDRSTRLEN];
     long ip = discover_addr.sin_addr.s_addr;
@@ -171,6 +170,8 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
     FD_SET(data_fd, &socks);
 
     if(select(FD_SETSIZE, &socks, NULL, NULL, NULL) >= 0){
+
+      char discover_cmbuf[0x100];
 
       if(FD_ISSET(discover_fd, &socks)){
         struct msghdr mesg = {
