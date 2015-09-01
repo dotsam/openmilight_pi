@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <getopt.h>
 
-#include <sys/time.h>
 #include <sys/select.h>
 
 #include <sys/socket.h>
@@ -27,7 +26,6 @@ PL1167_nRF24 prf(radio);
 MiLightRadio mlr(prf);
 
 static int debug = 0;
-
 static int dupesPrinted = 0;
 
 void receive()
@@ -40,7 +38,7 @@ void receive()
       mlr.read(packet, packet_length);
 
       for(size_t i = 0; i < packet_length; i++) {
-        printf("%02X ", packet[i]);
+        printf("[RF] Recieved: %02X ", packet[i]);
         fflush(stdout);
       }
     }
@@ -63,11 +61,11 @@ void send(uint8_t data[8])
   }
 
   if(debug){
-    printf("2.4GHz --> Sending: ");
+    printf("[RF] Sending: ");
     for (int i = 0; i < 7; i++) {
       printf("%02X ", data[i]);
     }
-    printf(" [x%d]\n", resends);
+    printf(" (x%d)\n", resends);
   }
 
   mlr.write(data, 7);
@@ -110,47 +108,11 @@ void send(uint8_t color, uint8_t bright, uint8_t key,
   send(data);
 }
 
-void udp_raw()
-{
-  int sockfd;
-  struct sockaddr_in servaddr, cliaddr;
-  char mesg[42];
-
-  sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-
-  bzero(&servaddr, sizeof(servaddr));
-  servaddr.sin_family = AF_INET;
-  servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-  servaddr.sin_port = htons(8899);
-  bind(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
-
-  while(1){
-    socklen_t len = sizeof(cliaddr);
-    int n = recvfrom(sockfd, mesg, 41, 0, (struct sockaddr *)&cliaddr, &len);
-
-    mesg[n] = '\0';
-
-    if(n == 8){
-      if(debug){
-        printf("UDP --> Received hex value\n");
-      }
-      uint8_t data[8];
-      for(int i = 0; i < 8; i++){
-        data[i] = (uint8_t)mesg[i];
-      }
-      send(data);
-    }
-    else {
-      fprintf(stderr, "Message has invalid size %d (expecting 8)!\n", n);
-    }
-  }
-}
-
 void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertise)
 {
   fd_set socks;
   int discover_fd, data_fd;
-  struct sockaddr_in discover_addr, data_addr, cliaddr;
+  struct sockaddr_in discover_addr, data_addr, cliaddr, connected_addr;
   char mesg[42];
 
   int disco = -1;
@@ -166,15 +128,19 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
   data[7] = retries;
 
   if(do_advertise){
-    if(debug){
-      printf("Answering bridge discovery requests\n");
-    }
     discover_fd = socket(AF_INET, SOCK_DGRAM, 0);
     bzero(&discover_addr, sizeof(discover_addr));
     discover_addr.sin_family = AF_INET;
     discover_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     discover_addr.sin_port = htons(48899);
     bind(discover_fd, (struct sockaddr *)&discover_addr, sizeof(discover_addr));
+    
+    char str_ip[INET_ADDRSTRLEN];
+    long ip = discover_addr.sin_addr.s_addr;
+    inet_ntop(AF_INET, &ip, str_ip, INET_ADDRSTRLEN);
+    int port = ntohs(discover_addr.sin_port);
+    
+    printf("[UDP-Discover] Listening on %s:%u\n", str_ip, port);
   }
 
   data_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -183,8 +149,16 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
   data_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   data_addr.sin_port = htons(8899);
   bind(data_fd, (struct sockaddr *)&data_addr, sizeof(data_addr));
+  
+  char str_ip[INET_ADDRSTRLEN];
+  long ip = data_addr.sin_addr.s_addr;
+  inet_ntop(AF_INET, &ip, str_ip, INET_ADDRSTRLEN);
+  int port = ntohs(data_addr.sin_port);
+  
+  printf("[UDP-Data] Listening on %s:%u\n", str_ip, port);
+  printf("[UDP-Data] Using remote code 0x%02X%02X\n",rem_p,remote);
 
-  printf("%d - %d (%d)\n", discover_fd, data_fd, FD_SETSIZE);
+  //printf("%d - %d (%d)\n", discover_fd, data_fd, FD_SETSIZE);
 
   while(1){
     socklen_t len = sizeof(cliaddr);
@@ -203,27 +177,38 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
           char str[INET_ADDRSTRLEN];
           long ip = cliaddr.sin_addr.s_addr;
           inet_ntop(AF_INET, &ip, str, INET_ADDRSTRLEN);
-          printf("UDP --> Received discovery request (%s) from %s\n", mesg, str);  
+          printf("[UDP-Discovery] Received %s: Request \"%s\"\n", str, mesg);  
         }
 
-        char str[INET_ADDRSTRLEN];
-        long ip = discover_addr.sin_addr.s_addr;
-        inet_ntop(AF_INET, &ip, str, INET_ADDRSTRLEN);
-        printf("my ip : %s\n", str);
-        
+        /* char str[INET_ADDRSTRLEN];
+        if(getsockname(discover_fd, (struct sockaddr *)&connected_addr, &len) == 0) {
+          long ip = connected_addr.sin_addr.s_addr;
+          inet_ntop(AF_INET, &ip, str, INET_ADDRSTRLEN);
+          printf("my ip : %s\n", str);
+        } else {
+          printf("well that didn't work\n");
+        } 
 
-        //if(!strncmp(mesg, "Link_Wi-Fi",)
+        if(!strncmp(mesg, "Link_Wi-Fi", sizeof(mesg))) {
+		  printf("something else");
+        } else {
+		  printf("send the discover response");	
+        } */
       }
       
       if(FD_ISSET(data_fd, &socks)){
         int n = recvfrom(data_fd, mesg, 41, 0, (struct sockaddr *)&cliaddr, &len);
+        
+        char str[INET_ADDRSTRLEN];
+        long ip = cliaddr.sin_addr.s_addr;
+        inet_ntop(AF_INET, &ip, str, INET_ADDRSTRLEN);
 
         mesg[n] = '\0';
 
 
         if(n == 2 || n == 3){
           if(debug){
-            printf("UDP --> Received hex value (%02x, %02x, %02x)\n", mesg[0], mesg[1], mesg[2]);
+            printf("[UDP-Data] Received %s: %02x %02x %02x\n", str, mesg[0], mesg[1], mesg[2]);
           }
 
           data[0] = 0xB8;
@@ -390,7 +375,7 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
               data[5] = 0x1A;
               break;
             default:
-              fprintf(stderr, "Unknown command %02x!\n", mesg[0]);
+              fprintf(stderr, "[UDP-Data] Unknown command %02x!\n", mesg[0]);
               continue;
           } /* End case command */
 
@@ -399,7 +384,7 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
           data[6]++;
         }
         else {
-          fprintf(stderr, "Message has invalid size %d (expecting 2 or 3)!\n", n);
+          fprintf(stderr, "[UDP-Data] Message has invalid size %d (expecting 2 or 3)!\n", n);
         } /* End message size check */
 
       } /* End handling data */
@@ -417,13 +402,12 @@ void usage(const char *arg, const char *options){
   printf("   -h                       Show this help\n");
   printf("   -d                       Show debug output\n");
   printf("   -l                       Listening (receiving) mode\n");
-  printf("   -u                       UDP mode (raw)\n");
-  printf("   -m                       UDP mode (milight)\n");
-  printf("   -a                       Enable milight bridge advertising\n");
+  printf("   -a                       Disable milight bridge advertising\n");
+  printf("   -m                       Manual command mode\n");  
   printf("   -n NN<dec>               Resends of the same message\n");
-  printf("   -p PP<hex>               Prefix value (Disco Mode)\n");
   printf("   -q RR<hex>               First byte of the remote\n");
   printf("   -r RR<hex>               Second byte of the remote\n");
+  printf("   -p PP<hex>               Prefix value (Disco Mode)\n");  
   printf("   -c CC<hex>               Color byte\n");
   printf("   -b BB<hex>               Brightness byte\n");
   printf("   -k KK<hex>               Key byte\n");
@@ -439,11 +423,13 @@ void usage(const char *arg, const char *options){
 
 int main(int argc, char** argv)
 {
+  // Unbuffer output for better logging when running as a daemon
+  setvbuf(stdout,NULL,_IONBF,0);
+
   int do_receive = 0;
-  int do_udp     = 0;
-  int do_milight = 0;
   int do_command = 0;
-  int do_advertise = 0;
+  int do_manual = 0;  
+  int do_advertise = 1;
 
   uint8_t prefix   = 0xB8;
   uint8_t rem_p    = 0x00;
@@ -460,7 +446,7 @@ int main(int argc, char** argv)
 
   uint64_t tmp;
 
-  const char *options = "hdluman:p:q:r:c:b:k:v:w:";
+  const char *options = "hdlamn:p:q:r:c:b:k:v:w:";
 
   while((c = getopt(argc, argv, options)) != -1){
     switch(c){
@@ -474,14 +460,11 @@ int main(int argc, char** argv)
       case 'l':
         do_receive = 1;
        break;
-      case 'u':
-        do_udp = 1;
-       break;
       case 'm':
-        do_milight = 1;
+        do_manual = 1;
        break;
       case 'a':
-        do_advertise = 1;
+        do_advertise = 0;
        break;
       case 'n':
         tmp = strtoll(optarg, NULL, 10);
@@ -522,7 +505,7 @@ int main(int argc, char** argv)
       case '?':
         if(optopt == 'n' || optopt == 'p' || optopt == 'q' || 
            optopt == 'r' || optopt == 'c' || optopt == 'b' ||
-           optopt == 'k' || optopt == 'w'){
+           optopt == 'k' || optopt == 'w' || optopt == 'v' ){
           fprintf(stderr, "Option -%c requires an argument.\n", optopt);
         }
         else if(isprint(optopt)){
@@ -551,22 +534,17 @@ int main(int argc, char** argv)
     printf("Receiving mode, press Ctrl-C to end\n");
     receive();
   }
- 
-  if(do_udp){
-    printf("UDP mode (raw), press Ctrl-C to end\n"); 
-    udp_raw();
-  } 
 
-  if(do_milight){
-    printf("UDP mode (milight), press Ctrl-C to end\n"); 
-    udp_milight(rem_p, remote, resends, do_advertise);
+  if(do_manual){
+    send(color, bright, key, remote, rem_p, prefix, seq, resends);
   }
 
   if(do_command){
     send(command);
   }
   else{
-    send(color, bright, key, remote, rem_p, prefix, seq, resends);
+    printf("Starting MiLight Bridge Emulator...\n"); 
+    udp_milight(rem_p, remote, resends, do_advertise);
   }
 
   return 0;
