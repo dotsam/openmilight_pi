@@ -112,7 +112,7 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
 {
   fd_set socks;
   int discover_fd, data_fd;
-  struct sockaddr_in discover_addr, data_addr, cliaddr, connected_addr;
+  struct sockaddr_in discover_addr, data_addr, cliaddr;
   char mesg[42];
 
   int disco = -1;
@@ -134,6 +134,9 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
     discover_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     discover_addr.sin_port = htons(48899);
     bind(discover_fd, (struct sockaddr *)&discover_addr, sizeof(discover_addr));
+
+    setsockopt(discover_fd, IPPROTO_IP, IP_PKTINFO);
+    char discover_cmbuf[0x100];
     
     char str_ip[INET_ADDRSTRLEN];
     long ip = discover_addr.sin_addr.s_addr;
@@ -156,7 +159,7 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
   int port = ntohs(data_addr.sin_port);
   
   printf("[UDP-Data] Listening on %s:%u\n", str_ip, port);
-  printf("[UDP-Data] Using remote code 0x%02X%02X\n",rem_p,remote);
+  printf("[UDP-Data] Using remote code 0x%02X 0x%02X\n",rem_p,remote);
 
   //printf("%d - %d (%d)\n", discover_fd, data_fd, FD_SETSIZE);
 
@@ -170,14 +173,41 @@ void udp_milight(uint8_t rem_p, uint8_t remote, uint8_t retries, int do_advertis
     if(select(FD_SETSIZE, &socks, NULL, NULL, NULL) >= 0){
 
       if(FD_ISSET(discover_fd, &socks)){
-        int n = recvfrom(discover_fd, mesg, 41, 0, (struct sockaddr *)&cliaddr, &len);
+        struct msghdr mesg = {
+          .msg_name = &cliaddr,
+          .msg_namelen = &len,
+          .msg_control = discover_cmbuf,
+          .msg_controllen = sizeof(discover_cmbuf),
+        };
+
+        //int n = recvfrom(discover_fd, mesg, 41, 0, (struct sockaddr *)&cliaddr, &len);
+        int n = recvmsg(discover_fd,mesg);
         mesg[n] = '\0';
+
+        for ( // iterate through all the control headers
+            struct cmsghdr *cmsg = CMSG_FIRSTHDR(&mesg);
+            cmsg != NULL;
+            cmsg = CMSG_NXTHDR(&mesg, cmsg))
+        {
+            // ignore the control headers that don't match what we want
+            if (cmsg->cmsg_level != IPPROTO_IP ||
+                cmsg->cmsg_type != IP_PKTINFO)
+            {
+                continue;
+            }
+            struct in_pktinfo *pi = CMSG_DATA(cmsg);
+            // at this point, peeraddr is the source sockaddr
+            // pi->ipi_spec_dst is the destination in_addr
+            // pi->ipi_addr is the receiving interface in_addr
+        }
         
         if(debug){
           char str[INET_ADDRSTRLEN];
           long ip = cliaddr.sin_addr.s_addr;
           inet_ntop(AF_INET, &ip, str, INET_ADDRSTRLEN);
-          printf("[UDP-Discovery] Received %s: Request \"%s\"\n", str, mesg);  
+          printf("[UDP-Discovery] Received %s: Request \"%s\"\n", str, mesg);
+          printf("ipi_spec_dst: %s\n",inet_ntoa(pi.ipi_spec_dst));
+          printf("ipi_addr: %s\n",inet_ntoa(pi.ipi_addr));
         }
 
         /* char str[INET_ADDRSTRLEN];
